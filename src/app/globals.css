@@ -1,26 +1,371 @@
 @import "tailwindcss";
 
+/* ─── ET Patrika — Design System ─────────────────────────────── */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Surface & Background */
+  --color-bg: #FAFAF7;
+  --color-surface: #FFFFFF;
+  --color-surface-elevated: #FFFFFF;
+  --color-surface-muted: #F5F3EF;
+
+  /* Ink */
+  --color-ink: #0F0F0F;
+  --color-ink-secondary: #3A3A3A;
+  --color-ink-muted: #5C5C5C;
+  --color-ink-subtle: #9A9A9A;
+  --color-ink-inverse: #FFFFFF;
+
+  /* Brand — ET Patrika Red */
+  --color-brand: #E8132B;
+  --color-brand-dark: #B50E20;
+  --color-brand-light: #FCE8EA;
+  --color-brand-glow: rgba(232, 19, 43, 0.12);
+
+  /* Gradient */
+  --color-accent-start: #E8132B;
+  --color-accent-end: #7A0A14;
+  --gradient-brand: linear-gradient(135deg, #E8132B 0%, #7A0A14 100%);
+  --gradient-brand-soft: linear-gradient(135deg, rgba(232,19,43,0.08) 0%, rgba(122,10,20,0.04) 100%);
+  --gradient-warm: linear-gradient(135deg, #FFF5F0 0%, #FAFAF7 100%);
+
+  /* Border */
+  --color-border: #E8E6E0;
+  --color-border-subtle: #F0EDE8;
+
+  /* Role Colors */
+  --color-student: #2563EB;
+  --color-student-bg: #EFF6FF;
+  --color-investor: #059669;
+  --color-investor-bg: #ECFDF5;
+  --color-founder: #7C3AED;
+  --color-founder-bg: #F5F3FF;
+  --color-citizen: #D97706;
+  --color-citizen-bg: #FFFBEB;
+
+  /* Sentiment */
+  --color-positive: #059669;
+  --color-neutral: #6B7280;
+  --color-negative: #DC2626;
+
+  /* Typography */
+  --font-headline: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Spacing */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(15, 15, 15, 0.04), 0 1px 2px rgba(15, 15, 15, 0.03);
+  --shadow-md: 0 4px 12px rgba(15, 15, 15, 0.06), 0 2px 4px rgba(15, 15, 15, 0.04);
+  --shadow-lg: 0 12px 32px rgba(15, 15, 15, 0.08), 0 4px 8px rgba(15, 15, 15, 0.04);
+  --shadow-brand: 0 4px 16px rgba(232, 19, 43, 0.2);
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
 }
 
+/* ─── Tailwind v4 Theme Registration ─────────────────────────── */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-ink);
+  --font-sans: var(--font-body);
+  --font-serif: var(--font-headline);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ─── Base ────────────────────────────────────────────────────── */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ─── Typography ──────────────────────────────────────────────── */
+
+.font-headline {
+  font-family: var(--font-headline);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.font-body {
+  font-family: var(--font-body);
+}
+
+.text-ink { color: var(--color-ink); }
+.text-ink-secondary { color: var(--color-ink-secondary); }
+.text-ink-muted { color: var(--color-ink-muted); }
+.text-ink-subtle { color: var(--color-ink-subtle); }
+.text-brand { color: var(--color-brand); }
+
+/* ─── Surfaces ────────────────────────────────────────────────── */
+
+.surface {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.surface-elevated {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+/* ─── Buttons ─────────────────────────────────────────────────── */
+
+.btn-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.75rem;
+  background: var(--gradient-brand);
+  color: white;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.95rem;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-out);
+  box-shadow: var(--shadow-brand);
+  text-decoration: none;
+}
+
+.btn-brand:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 24px rgba(232, 19, 43, 0.3);
+}
+
+.btn-brand:active {
+  transform: translateY(0);
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.btn-ghost:hover {
+  background: var(--color-surface-muted);
+  border-color: var(--color-ink-subtle);
+}
+
+/* ─── Role Badges ─────────────────────────────────────────────── */
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius-full);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.role-badge-student { background: var(--color-student-bg); color: var(--color-student); }
+.role-badge-investor { background: var(--color-investor-bg); color: var(--color-investor); }
+.role-badge-founder { background: var(--color-founder-bg); color: var(--color-founder); }
+.role-badge-citizen { background: var(--color-citizen-bg); color: var(--color-citizen); }
+
+/* ─── Category Pills ──────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.375rem 1rem;
+  border-radius: var(--radius-full);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-ink-secondary);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  user-select: none;
+}
+
+.pill:hover {
+  border-color: var(--color-brand);
+  color: var(--color-brand);
+}
+
+.pill-active {
+  background: var(--color-brand);
+  color: white;
+  border-color: var(--color-brand);
+}
+
+.pill-active:hover {
+  background: var(--color-brand-dark);
+  color: white;
+}
+
+/* ─── Sentiment Indicators ────────────────────────────────────── */
+
+.sentiment-positive { color: var(--color-positive); }
+.sentiment-neutral { color: var(--color-neutral); }
+.sentiment-negative { color: var(--color-negative); }
+
+.sentiment-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.sentiment-dot-positive { background: var(--color-positive); }
+.sentiment-dot-neutral { background: var(--color-neutral); }
+.sentiment-dot-negative { background: var(--color-negative); }
+
+/* ─── Animations ──────────────────────────────────────────────── */
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-fade-in {
+  animation: fadeIn var(--duration-slow) var(--ease-out) both;
+}
+
+.animate-slide-up {
+  animation: slideUp var(--duration-slow) var(--ease-out) both;
+}
+
+/* Stagger delays for lists */
+.stagger-1 { animation-delay: 60ms; }
+.stagger-2 { animation-delay: 120ms; }
+.stagger-3 { animation-delay: 180ms; }
+.stagger-4 { animation-delay: 240ms; }
+.stagger-5 { animation-delay: 300ms; }
+
+/* ─── Skeleton Loader ─────────────────────────────────────────── */
+
+.skeleton {
+  background: linear-gradient(90deg, var(--color-surface-muted) 25%, #EBE9E3 37%, var(--color-surface-muted) 63%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, var(--color-border) 25%, #F5F4F0 50%, var(--color-border) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* ─── Scrollbar ───────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-subtle);
+}
+
+/* ─── Selection ───────────────────────────────────────────────── */
+
+::selection {
+  background: var(--color-brand-light);
+  color: var(--color-brand-dark);
+}
+
+/* ─── Responsive & Utils ──────────────────────────────────────── */
+
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes pageFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.dashboard-wrapper, .briefing-page, .onboarding-container {
+  animation: pageFadeIn 0.3s ease-out;
 }

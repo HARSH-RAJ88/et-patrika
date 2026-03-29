@@ -33,6 +33,23 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# docs
+*.md
+
+# python
+.venv/
+**/__pycache__/
+*.pyc
+
+# media and model artifacts
+*.onnx
+*.wav
+*.srt
+*.ass
+*.mp4
+pipeline/video_studio/temp/
+pipeline/video_studio/outputs/
+
 # vercel
 .vercel
 
