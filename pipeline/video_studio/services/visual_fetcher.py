@@ -2,6 +2,8 @@
 Visual Fetcher using Pexels API.
 """
 import os
+import shutil
+from pathlib import Path
 import requests
 from io import BytesIO
 from PIL import Image, ImageEnhance
@@ -14,7 +16,24 @@ def create_gradient_backup(output_path: str, width: int, height: int):
     img.save(output_path)
     return output_path
 
-def fetch_images(keywords: list[str], count: int, job_id: str) -> list[str]:
+
+def _copy_prewarmed_fallback(output_dir: Path, slot: int) -> str | None:
+    fallback_dir = config.ASSETS_DIR / "fallback_images"
+    if not fallback_dir.exists():
+        return None
+
+    candidates = sorted(
+        [p for p in fallback_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
+    )
+    if not candidates:
+        return None
+
+    src = candidates[slot % len(candidates)]
+    dst = output_dir / f"fallback_{slot}{src.suffix.lower()}"
+    shutil.copyfile(src, dst)
+    return str(dst)
+
+def fetch_images(keywords: list[str], count: int, job_id: str, fast_mode: bool = False) -> list[str]:
     logger.info(f"Fetching {count} visuals for keywords: {keywords}")
     output_dir = config.TEMP_DIR / job_id / "images"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -34,6 +53,10 @@ def fetch_images(keywords: list[str], count: int, job_id: str) -> list[str]:
     search_terms.extend(keywords)
     search_terms.extend(["India business", "Mumbai skyline", "stock market chart"])
 
+    if fast_mode:
+        # Keep fast mode responsive by limiting remote search breadth.
+        search_terms = search_terms[:4]
+
     headers = {"Authorization": config.PEXELS_API_KEY}
     downloaded = 0
     
@@ -41,9 +64,10 @@ def fetch_images(keywords: list[str], count: int, job_id: str) -> list[str]:
         if downloaded >= count:
             break
             
-        url = f"https://api.pexels.com/v1/search?query={term}&per_page=5&orientation=landscape"
+        per_page = 3 if fast_mode else 5
+        url = f"https://api.pexels.com/v1/search?query={term}&per_page={per_page}&orientation=landscape"
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=6 if fast_mode else 10)
             if resp.status_code == 200:
                 data = resp.json()
                 for photo in data.get("photos", []):
@@ -51,7 +75,7 @@ def fetch_images(keywords: list[str], count: int, job_id: str) -> list[str]:
                         break
                     
                     img_url = photo["src"]["large2x"]
-                    img_resp = requests.get(img_url, timeout=10)
+                    img_resp = requests.get(img_url, timeout=6 if fast_mode else 10)
                     if img_resp.status_code == 200:
                         img = Image.open(BytesIO(img_resp.content)).convert("RGB")
                         
@@ -84,8 +108,12 @@ def fetch_images(keywords: list[str], count: int, job_id: str) -> list[str]:
 
     # Fill remaining with gradients
     while downloaded < count:
-        logger.warning(f"Falling back to gradient for slot {downloaded}")
-        paths.append(create_gradient_backup(str(output_dir / f"fallback_{downloaded}.jpg"), config.VIDEO_WIDTH, config.VIDEO_HEIGHT))
+        prewarmed = _copy_prewarmed_fallback(output_dir, downloaded)
+        if prewarmed:
+            paths.append(prewarmed)
+        else:
+            logger.warning(f"Falling back to gradient for slot {downloaded}")
+            paths.append(create_gradient_backup(str(output_dir / f"fallback_{downloaded}.jpg"), config.VIDEO_WIDTH, config.VIDEO_HEIGHT))
         downloaded += 1
 
     return paths

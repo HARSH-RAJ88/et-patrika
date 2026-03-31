@@ -1,7 +1,7 @@
 """
 ET Patrika Pipeline — Agent 2: Context Generator + Multi-Article Synthesizer
-Takes classified articles, fetches related articles, synthesizes via Gemini 2.0 Flash
-(with Groq llama-3.3-70b fallback), generates role-specific contexts.
+Takes classified articles, fetches related articles, synthesizes via routed primary model
+(with configured fallback), generates role-specific contexts.
 """
 
 import json
@@ -9,18 +9,24 @@ import re
 import time
 import asyncio
 import os
+import random
 
 from config import (
     groq_client,
+    gemini_model,
+    GROQ_MODEL_SYNTHESIS_PRIMARY,
+    GEMINI_MODEL_SYNTHESIS_FALLBACK,
     supabase_request,
     supabase_rest,
     log,
 )
+from models import AgentArticlePayload, normalize_article_payload
 
 # ── Related Article Fetching ─────────────────────────────────
 
-def fetch_related_articles(article: dict, limit: int = 5) -> list[dict]:
+def fetch_related_articles(article: AgentArticlePayload | dict, limit: int = 5) -> list[dict]:
     """Fetch up to `limit` related articles from Supabase."""
+    article = normalize_article_payload(article).to_dict()
     article_id = article.get("id")
     category = article.get("category")
     related = []
@@ -538,44 +544,235 @@ def parse_llm_response(raw: str) -> dict | None:
         log(f"JSON parse error: {e}", "WARN")
         return None
 
+
+PERSONA_HARD_BANS = {
+    "citizen": [
+        "portfolio", "equity", "market cap", "gtm", "unit economics",
+        "valuation", "ebitda", "ipo", "sector", "nifty", "sensex",
+        "startup", "term sheet", "runway", "cac", "ltv",
+        "placement package", "campus interview",
+    ]
+}
+
+
+def _flatten_role_text(ctx: dict) -> str:
+    chunks = [
+        str(ctx.get("headline", "")),
+        str(ctx.get("why_it_matters", "")),
+        str(ctx.get("role_analogy", "")),
+        str(ctx.get("what_to_watch", "")),
+    ]
+
+    cards = ctx.get("action_cards", [])
+    if isinstance(cards, list):
+        for card in cards:
+            if isinstance(card, dict):
+                chunks.append(str(card.get("title", "")))
+                chunks.append(str(card.get("description", "")))
+                chunks.append(str(card.get("cta", "")))
+
+    return "\n".join(chunks)
+
+
+def _find_banned_hits(text: str, banned_terms: list[str]) -> list[str]:
+    hits = []
+    for term in banned_terms:
+        # Word-boundary match, case-insensitive.
+        pattern = r"\b" + re.escape(term) + r"\b"
+        if re.search(pattern, text, re.IGNORECASE):
+            hits.append(term)
+    return hits
+
+
+def validate_persona_constraints(result: dict) -> tuple[bool, list[str]]:
+    role_contexts = result.get("role_contexts", {})
+    if not isinstance(role_contexts, dict):
+        return False, ["role_contexts missing or invalid"]
+
+    issues = []
+
+    for role, banned_terms in PERSONA_HARD_BANS.items():
+        ctx = role_contexts.get(role, {})
+        if not isinstance(ctx, dict):
+            issues.append(f"{role}: missing role context")
+            continue
+
+        role_text = _flatten_role_text(ctx)
+        hits = _find_banned_hits(role_text, banned_terms)
+        if hits:
+            issues.append(f"{role}: banned vocabulary detected -> {', '.join(sorted(set(hits)))}")
+
+    return len(issues) == 0, issues
+
+
+def repair_persona_violations(
+    article: dict,
+    related: list[dict],
+    invalid_result: dict,
+    issues: list[str],
+) -> dict | None:
+    issue_lines = "\n".join(f"- {issue}" for issue in issues)
+
+    repair_prompt = (
+        build_synthesis_prompt(article, related)
+        + "\n\nSTRICT REPAIR TASK:\n"
+        + "The previous JSON violated persona constraints. Repair it and return corrected JSON only.\n"
+        + "Do not change the schema. Preserve intent and facts.\n"
+        + "Fix banned vocabulary violations with role-appropriate rewrites.\n"
+        + f"Violations:\n{issue_lines}\n\n"
+        + "Previous invalid JSON:\n"
+        + json.dumps(invalid_result, ensure_ascii=False)
+    )
+
+    return synthesize_with_llm(repair_prompt)
+
 # ── LLM Callers ───────────────────────────────────────────────
 
+_LAST_SYNTHESIS_AUDIT = {
+  "provider": "unknown",
+  "model": "",
+  "retry_count": 0,
+}
 
 
-def call_groq(prompt: str) -> dict | None:
-    for attempt in range(2):
+def get_last_synthesis_audit() -> dict:
+  return dict(_LAST_SYNTHESIS_AUDIT)
+
+
+
+def _extract_http_status(exc: Exception) -> int | None:
+  status = getattr(exc, "status_code", None)
+  if isinstance(status, int):
+    return status
+
+  match = re.search(r"\b(429|5\d\d|4\d\d)\b", str(exc))
+  if match:
+    try:
+      return int(match.group(1))
+    except ValueError:
+      return None
+  return None
+
+
+def _is_retryable_status(status_code: int | None) -> bool:
+  if status_code is None:
+    return False
+  return status_code == 429 or status_code >= 500
+
+
+def _backoff_seconds(attempt: int) -> float:
+  # 2^attempt + jitter, bounded so pipeline remains responsive.
+  return min(float(2 ** attempt), 20.0) + random.uniform(0.0, 0.35)
+
+
+def call_groq(prompt: str) -> tuple[dict | None, int]:
+  max_retries = 3
+  retries_used = 0
+  for attempt in range(max_retries + 1):
+    try:
+      response = groq_client.chat.completions.create(
+        model=GROQ_MODEL_SYNTHESIS_PRIMARY,
+        messages=[
+          {"role": "system", "content": SYNTHESIS_SYSTEM},
+          {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=4000,
+      )
+      raw = response.choices[0].message.content
+      if raw:
+        return parse_llm_response(raw), retries_used
+      return None, retries_used
+    except Exception as e:
+      status_code = _extract_http_status(e)
+      if attempt < max_retries and _is_retryable_status(status_code):
+        delay = _backoff_seconds(attempt)
+        retries_used += 1
+        status_msg = f"HTTP {status_code}" if status_code is not None else "retryable error"
+        log(
+          f"Groq {status_msg}; retrying in {delay:.2f}s "
+          f"(attempt {attempt + 1}/{max_retries})",
+          "WARN",
+        )
+        time.sleep(delay)
+        continue
+      log(f"Groq primary error: {e}", "ERROR")
+      return None, retries_used
+  return None, retries_used
+
+
+def call_gemini(prompt: str) -> tuple[dict | None, int]:
+  max_retries = 2
+  retries_used = 0
+  for attempt in range(max_retries + 1):
+    try:
+      response = gemini_model.generate_content(
+        [
+          {"role": "user", "parts": [SYNTHESIS_SYSTEM]},
+          {"role": "user", "parts": [prompt]},
+        ]
+      )
+
+      raw = getattr(response, "text", None)
+      if not raw and getattr(response, "candidates", None):
         try:
-            response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": SYNTHESIS_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=4000,
-            )
-            raw = response.choices[0].message.content
-            if raw:
-                return parse_llm_response(raw)
-            return None
-        except Exception as e:
-            if attempt == 0:
-                log("Groq rate-limited, waiting 30s...", "WARN")
-                time.sleep(30)
-                continue
-            log(f"Groq fallback error: {e}", "ERROR")
-            return None
-    return None
+          raw = response.candidates[0].content.parts[0].text
+        except Exception:
+          raw = None
+
+      if raw:
+        return parse_llm_response(raw), retries_used
+      return None, retries_used
+    except Exception as e:
+      status_code = _extract_http_status(e)
+      if attempt < max_retries and _is_retryable_status(status_code):
+        delay = _backoff_seconds(attempt)
+        retries_used += 1
+        status_msg = f"HTTP {status_code}" if status_code is not None else "retryable error"
+        log(
+          f"Gemini fallback {status_msg}; retrying in {delay:.2f}s "
+          f"(attempt {attempt + 1}/{max_retries})",
+          "WARN",
+        )
+        time.sleep(delay)
+        continue
+      log(f"Gemini fallback error: {e}", "ERROR")
+      return None, retries_used
+  return None, retries_used
+
 
 def synthesize_with_llm(prompt: str) -> dict | None:
-    log("  Calling Groq Llama-3.3-70b (Primary)...", "INFO")
-    result = call_groq(prompt)
-    if result:
-        log("  ✓ Groq synthesis successful", "OK")
-        return result
-        
-    log("  Groq failed or limit exceeded.", "ERROR")
-    return None
+  global _LAST_SYNTHESIS_AUDIT
+
+  log(f"  Calling Groq {GROQ_MODEL_SYNTHESIS_PRIMARY} (Primary)...", "INFO")
+  result, groq_retries = call_groq(prompt)
+  if result:
+    _LAST_SYNTHESIS_AUDIT = {
+      "provider": "groq",
+      "model": GROQ_MODEL_SYNTHESIS_PRIMARY,
+      "retry_count": groq_retries,
+    }
+    log("  ✓ Groq synthesis successful", "OK")
+    return result
+
+  log("  Groq failed, trying Gemini fallback...", "WARN")
+  fallback, gemini_retries = call_gemini(prompt)
+  if fallback:
+    _LAST_SYNTHESIS_AUDIT = {
+      "provider": "gemini",
+      "model": GEMINI_MODEL_SYNTHESIS_FALLBACK,
+      "retry_count": groq_retries + gemini_retries,
+    }
+    log("  ✓ Gemini fallback synthesis successful", "OK")
+    return fallback
+
+  _LAST_SYNTHESIS_AUDIT = {
+    "provider": "none",
+    "model": "",
+    "retry_count": groq_retries + gemini_retries,
+  }
+  log("  Groq primary and Gemini fallback both failed.", "ERROR")
+  return None
 
 # ── Supabase Updates & Workflow ──────────────────────────────────────────
 
@@ -586,97 +783,161 @@ def check_context_exists(article_id: str) -> bool:
     )
     return result is not None and isinstance(result, list) and len(result) > 0
 
-async def synthesize_article(article: dict) -> bool:
-    article_id = article.get("id")
-    title = article.get("title", "Untitled")
-    log(f"Synthesizing: {title[:70]}...")
-    start_time = time.time()
-    
-    related = fetch_related_articles(article)
-    log(f"  Found {len(related)} related articles")
-    
-    prompt = build_synthesis_prompt(article, related)
+async def synthesize_article(article: AgentArticlePayload | dict) -> bool:
+  article_payload = normalize_article_payload(article)
+  article_dict = article_payload.to_dict()
+  article_id = article_payload.id
+  title = article_payload.title
+  log(f"Synthesizing: {title[:70]}...")
+  start_time = time.time()
+
+  related = fetch_related_articles(article_payload)
+  log(f"  Found {len(related)} related articles")
+
+  prompt = build_synthesis_prompt(article_dict, related)
+  result = synthesize_with_llm(prompt)
+
+  if result is None:
+    log("Retrying with single-article mode...", "WARN")
+    prompt = build_synthesis_prompt(article_dict, [])
     result = synthesize_with_llm(prompt)
-    
-    if result is None:
-        log("Retrying with single-article mode...", "WARN")
-        prompt = build_synthesis_prompt(article, [])
-        result = synthesize_with_llm(prompt)
-        
-    if result is None:
-        log(f"Synthesis completely failed for: {title[:50]}", "ERROR")
-        return False
-        
+
+  if result is None:
+    log(f"Synthesis completely failed for: {title[:50]}", "ERROR")
+    return False
+
+  eli5 = result.get("eli5", "")
+  synthesis_briefing = result.get("synthesis_briefing", "")
+  role_contexts = result.get("role_contexts", {})
+
+  if not eli5 or not synthesis_briefing:
+    log("Missing eli5 or synthesis_briefing in response", "WARN")
+    return False
+
+  valid_persona, issues = validate_persona_constraints(result)
+  if not valid_persona:
+    log("Persona validation failed. Attempting automatic repair...", "WARN")
+    for issue in issues:
+      log(f"  {issue}", "WARN")
+
+    repaired = repair_persona_violations(article_dict, related, result, issues)
+    if repaired is None:
+      log("Repair attempt failed. Rejecting synthesis output.", "ERROR")
+      return False
+
+    repaired_valid, repaired_issues = validate_persona_constraints(repaired)
+    if not repaired_valid:
+      log("Repaired output still violates persona constraints.", "ERROR")
+      for issue in repaired_issues:
+        log(f"  {issue}", "ERROR")
+      return False
+
+    result = repaired
     eli5 = result.get("eli5", "")
     synthesis_briefing = result.get("synthesis_briefing", "")
     role_contexts = result.get("role_contexts", {})
-    
-    if not eli5 or not synthesis_briefing:
-        log("Missing eli5 or synthesis_briefing in response", "WARN")
-        return False
-        
-    role_headlines = {role: ctx.get("headline", "") for role, ctx in role_contexts.items()}
-    
-    update_data = {
-        "story_momentum": result.get("story_momentum", "building"),
-        "bharat_india_split": result.get("bharat_india_split", "both"),
-        "conflict_index": result.get("conflict_index", 0.5),
-        "role_headlines": role_headlines,
-        "key_concepts": result.get("key_concepts", []),
-        "eli5": eli5,
-        "synthesis_briefing": synthesis_briefing,
-        "credibility_score": result.get("source_credibility", 0.5)
+
+  role_headlines = {role: ctx.get("headline", "") for role, ctx in role_contexts.items()}
+
+  # Optimistic lock for article update: PATCH with expected version.
+  expected_version = int(article_payload.version or 1)
+  update_data = {
+    "story_momentum": result.get("story_momentum", "building"),
+    "bharat_india_split": result.get("bharat_india_split", "both"),
+    "conflict_index": result.get("conflict_index", 0.5),
+    "role_headlines": role_headlines,
+    "key_concepts": result.get("key_concepts", []),
+    "eli5": eli5,
+    "synthesis_briefing": synthesis_briefing,
+    "credibility_score": result.get("source_credibility", 0.5),
+    "updated_by_agent": "agent2",
+    "version": expected_version + 1,
+    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+  }
+
+  success = supabase_request(
+    "PATCH",
+    "articles",
+    data=update_data,
+    params={"id": f"eq.{article_id}", "version": f"eq.{expected_version}"},
+  )
+  if success is None or (isinstance(success, list) and len(success) == 0):
+    log("Stale write detected on articles row (version mismatch).", "WARN")
+    return False
+
+  roles = ["student", "investor", "founder", "citizen"]
+  contexts_inserted = 0
+
+  for role in roles:
+    ctx = role_contexts.get(role, {})
+    if not ctx:
+      continue
+
+    row = {
+      "article_id": article_id,
+      "role": role,
+      "headline": ctx.get("headline", ""),
+      "why_it_matters": ctx.get("why_it_matters", ""),
+      "role_analogy": ctx.get("role_analogy", ""),
+      "action_cards": json.dumps(ctx.get("action_cards", [])),
+      "relevance_score": max(0.0, min(1.0, float(ctx.get("relevance_score", 0.5)))),
+      "what_to_watch": ctx.get("what_to_watch", ""),
+      "updated_by_agent": "agent2",
     }
-    
-    success = supabase_request("PATCH", "articles", data=update_data, params={"id": f"eq.{article_id}"})
-    if success is None:
-        log("Failed to update articles table", "ERROR")
-        return False
-        
-    roles = ["student", "investor", "founder", "citizen"]
-    contexts_inserted = 0
-    
-    for role in roles:
-        ctx = role_contexts.get(role, {})
-        if not ctx:
-            continue
-            
-        row = {
-            "article_id": article_id,
-            "role": role,
-            "headline": ctx.get("headline", ""),
-            "why_it_matters": ctx.get("why_it_matters", ""),
-            "role_analogy": ctx.get("role_analogy", ""),
-            "action_cards": json.dumps(ctx.get("action_cards", [])),
-            "relevance_score": max(0.0, min(1.0, float(ctx.get("relevance_score", 0.5)))),
-            "what_to_watch": ctx.get("what_to_watch", ""),
-        }
-        res = supabase_request("POST", "article_contexts", data=row)
-        if res is not None:
-            contexts_inserted += 1
-        else:
-            log(f"  Failed to insert context for role: {role}", "WARN")
 
-    elapsed = time.time() - start_time
-    log(f"  Synthesis complete ({contexts_inserted}/4 roles) in {elapsed:.1f}s", "OK")
-    return contexts_inserted == 4
+    existing_ctx = supabase_request(
+      "GET",
+      "article_contexts",
+      params={
+        "select": "id,version",
+        "article_id": f"eq.{article_id}",
+        "role": f"eq.{role}",
+        "limit": "1",
+      },
+    )
 
-async def synthesize_batch(articles: list[dict]) -> int:
-    success_count = 0
-    for i, article in enumerate(articles):
-        try:
-            log(f"\n[{i+1}/{len(articles)}]")
-            if check_context_exists(article.get("id")):
-                log("Already synthesized, skipping.", "SKIP")
-                continue
-            if await synthesize_article(article):
-                success_count += 1
-            if i < len(articles) - 1:
-                time.sleep(1.5)
-        except Exception as e:
-            log(f"Error synthesizing article {article.get('id', '?')}: {e}", "ERROR")
-            continue
-    return success_count
+    if existing_ctx and isinstance(existing_ctx, list) and len(existing_ctx) > 0:
+      ctx_id = existing_ctx[0].get("id")
+      ctx_version = int(existing_ctx[0].get("version", 1) or 1)
+      row["version"] = ctx_version + 1
+      res = supabase_request(
+        "PATCH",
+        "article_contexts",
+        data=row,
+        params={"id": f"eq.{ctx_id}", "version": f"eq.{ctx_version}"},
+      )
+    else:
+      row["version"] = 1
+      res = supabase_request("POST", "article_contexts", data=row)
+
+    if res is not None and (not isinstance(res, list) or len(res) > 0):
+      contexts_inserted += 1
+    else:
+      log(f"  Failed optimistic write for role context: {role}", "WARN")
+
+  elapsed = time.time() - start_time
+  log(f"  Synthesis complete ({contexts_inserted}/4 roles) in {elapsed:.1f}s", "OK")
+  return contexts_inserted == 4
+
+async def synthesize_batch(articles: list[AgentArticlePayload | dict]) -> int:
+  success_count = 0
+  for i, article in enumerate(articles):
+    article_payload: AgentArticlePayload | None = None
+    try:
+      article_payload = normalize_article_payload(article)
+      log(f"\n[{i+1}/{len(articles)}]")
+      if check_context_exists(article_payload.id):
+        log("Already synthesized, skipping.", "SKIP")
+        continue
+      if await synthesize_article(article_payload):
+        success_count += 1
+      if i < len(articles) - 1:
+        time.sleep(1.5)
+    except Exception as e:
+      article_id = article_payload.id if article_payload else "?"
+      log(f"Error synthesizing article {article_id}: {e}", "ERROR")
+      continue
+  return success_count
 
 
 # ── Reprocess ──────────────────────────────────────────────────
@@ -732,7 +993,7 @@ if __name__ == "__main__":
     articles = supabase_request(
         "GET", "articles",
         params={
-            "select": "id,title,content,entities,category,source,published_at",
+        "select": "id,title,content,entities,category,source,published_at,version,updated_by_agent",
             "synthesis_briefing": "is.null",
             "order": "published_at.desc",
             "limit": str(limit),

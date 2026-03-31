@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "check:env": "node scripts/check-env.mjs",
+    "prebuild": "npm run check:env",
+    "prestart": "npm run check:env",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

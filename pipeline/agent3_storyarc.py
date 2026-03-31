@@ -14,6 +14,7 @@ from config import (
     supabase_request,
     log,
 )
+from models import AgentArticlePayload, normalize_article_payload
 
 
 # ── Mistral Prompts ───────────────────────────────────────────
@@ -117,7 +118,7 @@ def fetch_existing_arc(topic_key: str) -> dict | None:
         "GET",
         "story_arcs",
         params={
-            "select": "id,topic_key,display_name,timeline,key_players,category",
+            "select": "id,topic_key,display_name,timeline,key_players,category,version",
             "topic_key": f"eq.{topic_key}",
             "limit": "1",
         },
@@ -156,6 +157,8 @@ def create_story_arc(topic_key: str, display_name: str, category: str,
         "timeline": json.dumps([timeline_entry]),
         "key_players": json.dumps(key_players),
         "category": category,
+        "version": 1,
+        "updated_by_agent": "agent3",
     }
 
     result = supabase_request("POST", "story_arcs", data=row)
@@ -214,6 +217,7 @@ def update_story_arc(arc: dict, event: dict, article: dict) -> bool:
             existing_names.add(entity.lower())
 
     # Update in Supabase
+    expected_version = int(arc.get("version", 1) or 1)
     result = supabase_request(
         "PATCH",
         "story_arcs",
@@ -221,42 +225,55 @@ def update_story_arc(arc: dict, event: dict, article: dict) -> bool:
             "timeline": json.dumps(timeline),
             "key_players": json.dumps(key_players),
             "last_updated_at": datetime.now(timezone.utc).isoformat(),
+            "version": expected_version + 1,
+            "updated_by_agent": "agent3",
         },
-        params={"id": f"eq.{arc['id']}"},
+        params={"id": f"eq.{arc['id']}", "version": f"eq.{expected_version}"},
     )
-    return result is not None
+    return result is not None and (not isinstance(result, list) or len(result) > 0)
 
 
-def update_article_story_arc_key(article_id: str, topic_key: str) -> bool:
+def update_article_story_arc_key(article_id: str, topic_key: str, expected_version: int | None = None) -> bool:
     """Set the story_arc_key on the article."""
+    if expected_version is None:
+        row = supabase_request(
+            "GET",
+            "articles",
+            params={"select": "id,version", "id": f"eq.{article_id}", "limit": "1"},
+        )
+        if row and isinstance(row, list) and len(row) > 0:
+            expected_version = int(row[0].get("version", 1) or 1)
+        else:
+            expected_version = 1
+
     result = supabase_request(
         "PATCH",
         "articles",
-        data={"story_arc_key": topic_key},
-        params={"id": f"eq.{article_id}"},
+        data={
+            "story_arc_key": topic_key,
+            "updated_by_agent": "agent3",
+            "version": int(expected_version) + 1,
+        },
+        params={"id": f"eq.{article_id}", "version": f"eq.{int(expected_version)}"},
     )
-    return result is not None
+    return result is not None and (not isinstance(result, list) or len(result) > 0)
 
 
 # ── Main Entry Point ──────────────────────────────────────────
 
-def process_story_arc(article: dict) -> str | None:
+def process_story_arc(article: AgentArticlePayload | dict) -> str | None:
     """
     Main Agent 3 entry point.
     Takes an article (post Agent 2), builds/updates its story arc.
     Returns the topic_key, or None on failure.
     """
-    article_id = article.get("id")
-    title = article.get("title", "Untitled")
-    eli5 = article.get("eli5", "")
-    category = article.get("category", "Global")
-    entities = article.get("entities", [])
-
-    if isinstance(entities, str):
-        try:
-            entities = json.loads(entities)
-        except (json.JSONDecodeError, TypeError):
-            entities = []
+    article_payload = normalize_article_payload(article)
+    article = article_payload.to_dict()
+    article_id = article_payload.id
+    title = article_payload.title
+    eli5 = article_payload.eli5 or ""
+    category = article_payload.category
+    entities = article_payload.entities
 
     log(f"Processing story arc: {title[:60]}...")
 
@@ -305,7 +322,8 @@ def process_story_arc(article: dict) -> str | None:
         return None
 
     # Step 4: Update article with story_arc_key
-    update_article_story_arc_key(article_id, topic_key)
+    if not update_article_story_arc_key(article_id, topic_key, article_payload.version):
+        log("  Stale write detected while linking article to story arc", "WARN")
     log(f"  Story arc complete: {topic_key}", "OK")
 
     # Rate limit between Mistral calls
@@ -337,7 +355,7 @@ if __name__ == "__main__":
         "GET",
         "articles",
         params={
-            "select": "id,title,content,eli5,entities,category,published_at",
+            "select": "id,title,content,eli5,entities,category,published_at,version,updated_by_agent",
             "synthesis_briefing": "not.is.null",
             "story_arc_key": "is.null",
             "order": "published_at.desc",

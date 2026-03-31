@@ -97,6 +97,8 @@ export default function DashboardPage() {
 
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [category, setCategory] = useState('all');
+  const [sortBy, setSortBy] = useState<'relevance' | 'conflict'>('relevance');
+  const [splitFilter, setSplitFilter] = useState<'all' | 'india_only' | 'bharat_only' | 'both' | 'global'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -116,7 +118,14 @@ export default function DashboardPage() {
 
   const SUPPORTED_TRANSLATION_LANGUAGES: SupportedLanguage[] = ['hi', 'ta', 'bn', 'te'];
 
-  const fetchFeed = useCallback(async (role: UserRole, cat: string, off: number, append: boolean = false) => {
+  const fetchFeed = useCallback(async (
+    role: UserRole,
+    cat: string,
+    off: number,
+    append: boolean = false,
+    orderBy: 'relevance' | 'conflict' = 'relevance',
+    split: 'all' | 'india_only' | 'bharat_only' | 'both' | 'global' = 'all'
+  ) => {
     if (!append) setIsLoading(true);
     else setLoadingMore(true);
 
@@ -124,6 +133,8 @@ export default function DashboardPage() {
       const params = new URLSearchParams({
         role,
         category: cat,
+        sortBy: orderBy,
+        split,
         limit: '10',
         offset: off.toString(),
       });
@@ -161,9 +172,9 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setOffset(0);
-    fetchFeed(currentRole, category, 0);
+    fetchFeed(currentRole, category, 0, false, sortBy, splitFilter);
     fetchStoryArcs();
-  }, [currentRole, category, fetchFeed, fetchStoryArcs]);
+  }, [currentRole, category, sortBy, splitFilter, fetchFeed, fetchStoryArcs]);
 
   useEffect(() => {
     if (currentLanguage === 'en') {
@@ -301,13 +312,21 @@ export default function DashboardPage() {
   const handleLoadMore = () => {
     const newOffset = offset + 10;
     setOffset(newOffset);
-    fetchFeed(currentRole, category, newOffset, true);
+    fetchFeed(currentRole, category, newOffset, true, sortBy, splitFilter);
   };
 
   const handleCategoryChange = (cat: string) => {
     setCategory(cat);
     setOffset(0);
   };
+
+  const SPLIT_OPTIONS: Array<{ value: 'all' | 'india_only' | 'bharat_only' | 'both' | 'global'; label: string }> = [
+    { value: 'all', label: 'All Splits' },
+    { value: 'india_only', label: 'India Focus' },
+    { value: 'bharat_only', label: 'Bharat Focus' },
+    { value: 'both', label: 'Bharat + India' },
+    { value: 'global', label: 'Global Context' },
+  ];
 
   const featured = feedItems.length > 0 ? feedItems[0] : null;
   const remaining = feedItems.slice(1);
@@ -370,6 +389,37 @@ export default function DashboardPage() {
         /* ─── Category Section ─── */
         .category-section {
           margin-bottom: 1.5rem;
+        }
+
+        .branch-controls {
+          margin-top: 0.875rem;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+          align-items: center;
+        }
+
+        .branch-pill {
+          border: 1px solid var(--color-border-subtle);
+          background: var(--color-surface);
+          color: var(--color-ink-secondary);
+          border-radius: var(--radius-full);
+          padding: 0.35rem 0.85rem;
+          font-size: 0.78rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .branch-pill:hover {
+          border-color: var(--color-border);
+          color: var(--color-ink);
+        }
+
+        .branch-pill.active {
+          border-color: var(--color-brand);
+          background: var(--color-brand-light);
+          color: var(--color-brand);
         }
 
         /* ─── Feed List ─── */
@@ -587,6 +637,38 @@ export default function DashboardPage() {
           <main className="dash-main">
             <div className="category-section">
               <CategoryTabs active={category} onChange={handleCategoryChange} />
+              <div className="branch-controls" aria-label="Feed branching controls">
+                <button
+                  className={`branch-pill ${sortBy === 'relevance' ? 'active' : ''}`}
+                  onClick={() => {
+                    setSortBy('relevance');
+                    setOffset(0);
+                  }}
+                >
+                  Sort: Relevance
+                </button>
+                <button
+                  className={`branch-pill ${sortBy === 'conflict' ? 'active' : ''}`}
+                  onClick={() => {
+                    setSortBy('conflict');
+                    setOffset(0);
+                  }}
+                >
+                  Sort: Conflict
+                </button>
+                {SPLIT_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    className={`branch-pill ${splitFilter === option.value ? 'active' : ''}`}
+                    onClick={() => {
+                      setSplitFilter(option.value);
+                      setOffset(0);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {isLoading ? (

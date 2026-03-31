@@ -4,13 +4,42 @@ Handles language differences.
 """
 import json
 import re
+import os
 from groq import Groq
 from pipeline.video_studio.models.schemas import NewsScript
 from pipeline.video_studio.core.config import config
 from pipeline.video_studio.core.logger import logger
+from pipeline.video_studio.services import supabase_reader as db
+
+SCRIPT_MODEL = os.getenv("GROQ_MODEL_VIDEO_SCRIPT", "llama-3.1-8b-instant")
+SCRIPT_INPUT_COST_PER_M = float(os.getenv("GROQ_VIDEO_SCRIPT_INPUT_COST_PER_M", "0.05"))
+SCRIPT_OUTPUT_COST_PER_M = float(os.getenv("GROQ_VIDEO_SCRIPT_OUTPUT_COST_PER_M", "0.08"))
+
+
+def _extract_usage(response) -> tuple[int, int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0, 0
+
+    if isinstance(usage, dict):
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens) or 0)
+        return prompt_tokens, completion_tokens, total_tokens
+
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+    return prompt_tokens, completion_tokens, total_tokens
+
+
+def _estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
+    input_cost = (prompt_tokens / 1_000_000.0) * SCRIPT_INPUT_COST_PER_M
+    output_cost = (completion_tokens / 1_000_000.0) * SCRIPT_OUTPUT_COST_PER_M
+    return round(input_cost + output_cost, 8)
 
 SYSTEM_PROMPT = """You are the broadcast scriptwriter for ET Patrika — India's first
-role-aware business intelligence channel. You write 60–90 second news anchor scripts
+role-aware business intelligence channel. You write 35-90 second news anchor scripts
 that are NEVER generic. Every script is written for a specific viewer.
 
 Your voice: Bloomberg India meets DD News. Authoritative. Crisp. Never sensational.
@@ -35,6 +64,7 @@ Viewer role: {role}
 ═══ STYLE & LANGUAGE ═══
 Style Instruction: {style_instruction}
 Language: {language_instruction}
+Target Duration: {duration_instruction}
 
 ═══ TASK ═══
 Write a broadcast script ANGLED for the viewer's role.
@@ -85,7 +115,10 @@ def generate_script_from_article(
     role_context: dict = None,
     role: str = "general",
     style: str = "standard",
-    language: str = "en"
+    language: str = "en",
+    fast_mode: bool = False,
+    article_id: str | None = None,
+    video_job_id: str | None = None,
 ) -> NewsScript:
     if not config.GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY not set in pipeline/.env")
@@ -111,6 +144,13 @@ def generate_script_from_article(
     if language == "hi":
         language_instruction = "Hindi (Devanagari script). Ensure the text is natural spoken Hindi news style."
 
+    duration_instruction = (
+        "FAST MODE: script must land in 35-45 seconds read time."
+        " Keep facts to only the highest-signal points."
+        if fast_mode else
+        "Standard mode: script should land in 60-90 seconds read time."
+    )
+
     prompt = USER_PROMPT.format(
         title=article.get("title", ""),
         source=article.get("source", "ET Patrika"),
@@ -118,14 +158,15 @@ def generate_script_from_article(
         role=role,
         role_context_block=role_block,
         style_instruction=STYLE_INSTRUCTIONS.get(style, STYLE_INSTRUCTIONS["standard"]),
-        language_instruction=language_instruction
+        language_instruction=language_instruction,
+        duration_instruction=duration_instruction,
     )
 
     logger.info(f"Generating script: role={role}, style={style}, lang={language}, title={article.get('title','')[:40]}")
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=SCRIPT_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
@@ -134,6 +175,28 @@ def generate_script_from_article(
             max_tokens=1500,
             response_format={"type": "json_object"}
         )
+
+        prompt_tokens, completion_tokens, total_tokens = _extract_usage(response)
+        try:
+            db.log_ai_cost_event(
+                stage="video_script_generation",
+                provider="groq",
+                model=SCRIPT_MODEL,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost_usd=_estimate_cost_usd(prompt_tokens, completion_tokens),
+                article_id=article_id,
+                video_job_id=video_job_id,
+                metadata={
+                    "role": role,
+                    "style": style,
+                    "language": language,
+                    "fast_mode": fast_mode,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Cost log insert failed: {exc}")
     except Exception as e:
         raise RuntimeError(f"Groq API failed: {e}. Verify GROQ_API_KEY in pipeline/.env")
 
@@ -150,7 +213,10 @@ def generate_script_from_article(
     facts_text = " ".join(data.get("key_facts", []))
     full_script = f"{data['hook']} {facts_text} {data['context']} {data['closing']}"
     word_count = len(full_script.split())
-    duration = max(60, min(120, int((word_count / 150) * 60)))
+    if fast_mode:
+        duration = max(35, min(45, int((word_count / 165) * 60)))
+    else:
+        duration = max(60, min(120, int((word_count / 150) * 60)))
 
     return NewsScript(
         hook=data["hook"],

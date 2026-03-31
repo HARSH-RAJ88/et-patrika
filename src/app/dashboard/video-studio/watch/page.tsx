@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Navbar from '@/components/layout/Navbar';
 import BottomNav from '@/components/layout/BottomNav';
 
-const VIDEO_API_BASE = process.env.NEXT_PUBLIC_VIDEO_STUDIO_API_BASE || (process.env.NODE_ENV === 'development' ? 'http://localhost:8001' : '');
+const VIDEO_API_PROXY_BASE = '/api/video-studio';
 
 interface VideoKeyPointsResponse {
   article_id: string;
@@ -42,7 +42,7 @@ function VideoWatchContent() {
     let cancelled = false;
 
     const fetchKeyPoints = async () => {
-      if (!articleId || !VIDEO_API_BASE) {
+      if (!articleId) {
         setKeyPoints(null);
         return;
       }
@@ -50,7 +50,7 @@ function VideoWatchContent() {
       setIsKeyPointsLoading(true);
       try {
         const params = new URLSearchParams({ article_id: articleId, role, language });
-        const response = await fetch(`${VIDEO_API_BASE}/studio/api/key-points?${params.toString()}`);
+        const response = await fetch(`${VIDEO_API_PROXY_BASE}/key-points?${params.toString()}`);
         if (!response.ok) return;
 
         const data = (await response.json()) as VideoKeyPointsResponse;

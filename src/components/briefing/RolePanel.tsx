@@ -79,8 +79,9 @@ export default function RolePanel({ articleId, allContexts, initialRole, eli5 }:
     }
   }, [articleId]);
 
-  // Get context for current role
-  const context = activeContext || roleContexts.find((c) => c.role === activeRole) || roleContexts[0];
+  // Keep role-specific context strict; do not silently fall back to another role.
+  const context = activeContext || roleContexts.find((c) => c.role === activeRole) || null;
+  const isContextUnavailable = !context;
   const color = ROLE_COLORS[activeRole];
   const bgColor = ROLE_BG[activeRole];
 
@@ -435,6 +436,49 @@ export default function RolePanel({ articleId, allContexts, initialRole, eli5 }:
           font-size: 1.25rem;
           font-weight: 700;
         }
+
+        .rp-unavailable {
+          margin-top: 0.5rem;
+          padding: 1rem;
+          border: 1.5px dashed var(--color-border);
+          border-radius: var(--radius-md);
+          background: var(--color-surface-muted);
+        }
+
+        .rp-unavailable-title {
+          font-size: 0.9rem;
+          font-weight: 700;
+          color: var(--color-ink);
+          margin-bottom: 0.375rem;
+          display: flex;
+          align-items: center;
+          gap: 0.375rem;
+        }
+
+        .rp-unavailable-text {
+          font-size: 0.84rem;
+          line-height: 1.6;
+          color: var(--color-ink-muted);
+          margin-bottom: 0.75rem;
+        }
+
+        .rp-unavailable-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.25rem;
+          padding: 0.35rem 0.8rem;
+          border: 1.5px solid;
+          border-radius: var(--radius-full);
+          font-size: 0.78rem;
+          font-weight: 600;
+          background: transparent;
+          cursor: pointer;
+          transition: opacity 0.15s ease;
+        }
+
+        .rp-unavailable-btn:hover {
+          opacity: 0.85;
+        }
       `}</style>
 
       <div className="role-panel-inner">
@@ -467,6 +511,24 @@ export default function RolePanel({ articleId, allContexts, initialRole, eli5 }:
 
         {/* Panel Content (transitions on role switch) */}
         <div className={`rp-content ${isTransitioning ? 'rp-content-transitioning' : ''}`}>
+
+          {isContextUnavailable && (
+            <div className="rp-unavailable">
+              <div className="rp-unavailable-title">
+                ⚠️ Context unavailable for {activeRole}
+              </div>
+              <div className="rp-unavailable-text">
+                We could not load this role&apos;s briefing context yet. You can retry now, or switch roles and come back.
+              </div>
+              <button
+                className="rp-unavailable-btn"
+                style={{ borderColor: color, color }}
+                onClick={() => fetchRoleContext(activeRole)}
+              >
+                Retry loading context
+              </button>
+            </div>
+          )}
 
           {/* Role Headline */}
           {context?.headline && (
@@ -530,22 +592,24 @@ export default function RolePanel({ articleId, allContexts, initialRole, eli5 }:
           )}
 
           {/* Relevance Ring */}
-          <div className="rp-relevance">
-            <svg className="rp-ring-svg" viewBox="0 0 36 36">
-              <circle className="rp-ring-bg" cx="18" cy="18" r="15.5" />
-              <circle
-                className="rp-ring-fill"
-                cx="18" cy="18" r="15.5"
-                stroke={color}
-                strokeDasharray={`${relevance} ${100 - relevance}`}
-                strokeDashoffset="0"
-              />
-            </svg>
-            <div>
-              <div className="rp-ring-score" style={{ color }}>{relevance}%</div>
-              <div className="rp-ring-label">Relevance for {activeRole}s</div>
+          {!isContextUnavailable && (
+            <div className="rp-relevance">
+              <svg className="rp-ring-svg" viewBox="0 0 36 36">
+                <circle className="rp-ring-bg" cx="18" cy="18" r="15.5" />
+                <circle
+                  className="rp-ring-fill"
+                  cx="18" cy="18" r="15.5"
+                  stroke={color}
+                  strokeDasharray={`${relevance} ${100 - relevance}`}
+                  strokeDashoffset="0"
+                />
+              </svg>
+              <div>
+                <div className="rp-ring-score" style={{ color }}>{relevance}%</div>
+                <div className="rp-ring-label">Relevance for {activeRole}s</div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </aside>

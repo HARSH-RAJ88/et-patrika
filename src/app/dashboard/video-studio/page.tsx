@@ -9,7 +9,7 @@ import { useUser } from '@/contexts/UserContext';
 import type { FeedItem, UserRole } from '@/types';
 import VideoCard, { VideoArticlePreview, VideoJobCardStatus } from '@/components/video-studio/VideoCard';
 
-const VIDEO_API_BASE = process.env.NEXT_PUBLIC_VIDEO_STUDIO_API_BASE || (process.env.NODE_ENV === 'development' ? 'http://localhost:8001' : '');
+const VIDEO_API_PROXY_BASE = '/api/video-studio';
 const REQUEST_TIMEOUT_MS = 3500;
 
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs: number = REQUEST_TIMEOUT_MS) {
@@ -56,6 +56,7 @@ export default function VideoStudioPage() {
   const [backendOffline, setBackendOffline] = useState(false);
   const [isCheckingBackend, setIsCheckingBackend] = useState(true);
   const [isLoadingArticles, setIsLoadingArticles] = useState(true);
+  const [fastMode, setFastMode] = useState(true);
   const [articles, setArticles] = useState<VideoArticlePreview[]>([]);
   const [recentVideos, setRecentVideos] = useState<Array<VideoHistoryItem & { title: string }>>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, VideoJobCardStatus & { jobId?: string }>>({});
@@ -75,10 +76,10 @@ export default function VideoStudioPage() {
   }, []);
 
   const refreshHistory = useCallback(async (titleMap: Record<string, string>) => {
-    if (backendOffline || !VIDEO_API_BASE) return;
+    if (backendOffline) return;
 
     try {
-      const response = await fetchWithTimeout(`${VIDEO_API_BASE}/studio/api/history?limit=20`);
+      const response = await fetchWithTimeout(`${VIDEO_API_PROXY_BASE}/history?limit=20`);
       if (!response.ok) return;
       const rows = (await response.json()) as VideoHistoryItem[];
       const done = rows.filter((row) => row.status === 'done').slice(0, 5);
@@ -119,77 +120,47 @@ export default function VideoStudioPage() {
     const titleMap: Record<string, string> = {};
 
     try {
-      if (!backendOffline && VIDEO_API_BASE) {
-        const backendRes = await fetchWithTimeout(
-          `${VIDEO_API_BASE}/studio/api/articles?limit=20&category=${encodeURIComponent(selectedCategory)}`
-        );
+      const backendRes = await fetchWithTimeout(
+        `${VIDEO_API_PROXY_BASE}/articles?limit=10&category=${encodeURIComponent(selectedCategory)}`
+      );
 
-        if (!backendRes.ok) {
-          throw new Error('Video backend article fetch failed');
-        }
-
-        const backendArticles = (await backendRes.json()) as VideoArticlePreview[];
-        const feedRes = await fetchWithTimeout(
-          `/api/feed?role=${currentRole}&category=${encodeURIComponent(selectedCategory)}&limit=20&offset=0`,
-          undefined,
-          6000
-        );
-        const feedJson = await feedRes.json();
-        const feedData = (feedJson.data || []) as FeedItem[];
-
-        const feedMap = new Map<string, FeedItem>();
-        feedData.forEach((item) => {
-          feedMap.set(item.article.id, item);
-        });
-
-        const merged = backendArticles.map((article) => {
-          const feedItem = feedMap.get(article.id);
-          const feedArticle = feedItem?.article as { story_momentum?: string; eli5?: string } | undefined;
-          const mergedItem: VideoArticlePreview = {
-            ...article,
-            title: feedItem?.context?.headline || article.title,
-            story_momentum: feedArticle?.story_momentum || article.story_momentum,
-            eli5: feedArticle?.eli5 || article.eli5,
-          };
-          titleMap[mergedItem.id] = mergedItem.title;
-          return mergedItem;
-        });
-
-        setArticles(merged);
-        await refreshHistory(titleMap);
-      } else {
-        const fallbackRes = await fetchWithTimeout(
-          `/api/feed?role=${currentRole}&category=${encodeURIComponent(selectedCategory)}&limit=20&offset=0`,
-          undefined,
-          6000
-        );
-        const fallbackJson = await fallbackRes.json();
-        const fallbackData = (fallbackJson.data || []) as FeedItem[];
-
-        const mapped: VideoArticlePreview[] = fallbackData.map((item) => {
-          const article = item.article;
-          const fallbackArticle = article as { story_momentum?: string; eli5?: string };
-          const preview = {
-            id: article.id,
-            title: item.context?.headline || article.title,
-            source: article.source,
-            category: article.category,
-            published_at: article.published_at,
-            credibility_score: article.credibility_score,
-            story_momentum: fallbackArticle.story_momentum,
-            eli5: fallbackArticle.eli5 || undefined,
-          };
-          titleMap[preview.id] = preview.title;
-          return preview;
-        });
-
-        setArticles(mapped);
-        setRecentVideos([]);
+      if (!backendRes.ok) {
+        throw new Error('Video backend article fetch failed');
       }
+
+      const backendArticles = (await backendRes.json()) as VideoArticlePreview[];
+      const feedRes = await fetchWithTimeout(
+        `/api/feed?role=${currentRole}&category=${encodeURIComponent(selectedCategory)}&limit=10&offset=0`,
+        undefined,
+        6000
+      );
+      const feedJson = await feedRes.json();
+      const feedData = (feedJson.data || []) as FeedItem[];
+
+      const feedMap = new Map<string, FeedItem>();
+      feedData.forEach((item) => {
+        feedMap.set(item.article.id, item);
+      });
+
+      const merged = backendArticles.map((article) => {
+        const feedItem = feedMap.get(article.id);
+        const feedArticle = feedItem?.article as { story_momentum?: string; eli5?: string } | undefined;
+        const mergedItem: VideoArticlePreview = {
+          ...article,
+          title: feedItem?.context?.headline || article.title,
+          story_momentum: feedArticle?.story_momentum || article.story_momentum,
+          eli5: feedArticle?.eli5 || article.eli5,
+        };
+        titleMap[mergedItem.id] = mergedItem.title;
+        return mergedItem;
+      });
+
+      setArticles(merged);
+      await refreshHistory(titleMap);
     } catch {
-      if (!backendOffline) {
-        setBackendOffline(true);
-      }
+      setBackendOffline(true);
+      setArticles([]);
+      setRecentVideos([]);
     } finally {
       setIsLoadingArticles(false);
     }
@@ -199,16 +170,8 @@ export default function VideoStudioPage() {
     let cancelled = false;
 
     const checkBackend = async () => {
-      if (!VIDEO_API_BASE) {
-        if (!cancelled) {
-          setBackendOffline(true);
-          setIsCheckingBackend(false);
-        }
-        return;
-      }
-
       try {
-        const response = await fetchWithTimeout(`${VIDEO_API_BASE}/studio/api/health`);
+        const response = await fetchWithTimeout(`${VIDEO_API_PROXY_BASE}/health`);
         if (!response.ok) throw new Error('Backend health failed');
         if (!cancelled) {
           setBackendOffline(false);
@@ -271,13 +234,11 @@ export default function VideoStudioPage() {
   }, []);
 
   const startPolling = useCallback((jobId: string, jobKey: string, role: UserRole, articleTitle: string) => {
-    if (!VIDEO_API_BASE) return;
-
     clearPoller(jobKey);
 
     pollersRef.current[jobKey] = setInterval(async () => {
       try {
-        const response = await fetch(`${VIDEO_API_BASE}/studio/api/status/${jobId}`);
+        const response = await fetch(`${VIDEO_API_PROXY_BASE}/status/${jobId}`);
         if (!response.ok) return;
 
         const status = await response.json();
@@ -320,7 +281,7 @@ export default function VideoStudioPage() {
   }, [clearPoller]);
 
   const handleGenerate = useCallback(async (articleId: string, role: string) => {
-    if (backendOffline || !VIDEO_API_BASE) return;
+    if (backendOffline) return;
 
     const selectedArticle = articles.find((article) => article.id === articleId);
     const articleTitle = selectedArticle?.title || 'Generated video';
@@ -338,7 +299,7 @@ export default function VideoStudioPage() {
     }));
 
     try {
-      const response = await fetch(`${VIDEO_API_BASE}/studio/api/generate`, {
+      const response = await fetch(`${VIDEO_API_PROXY_BASE}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -347,6 +308,7 @@ export default function VideoStudioPage() {
           role: normalizedRole,
           style: 'standard',
           language: generationLanguage,
+          fast_mode: fastMode,
         }),
       });
 
@@ -381,12 +343,13 @@ export default function VideoStudioPage() {
         },
       }));
     }
-  }, [articles, backendOffline, currentRole, generationLanguage, startPolling]);
+  }, [articles, backendOffline, currentRole, generationLanguage, startPolling, fastMode]);
 
   const openPlayer = useCallback((videoUrl: string, articleTitle: string, role: string, articleId: string, durationSeconds?: number) => {
-    const normalized = videoUrl.startsWith('http')
-      ? videoUrl
-      : `${VIDEO_API_BASE}${videoUrl.startsWith('/') ? '' : '/'}${videoUrl}`;
+    const mediaPath = videoUrl.startsWith('http')
+      ? new URL(videoUrl).pathname
+      : videoUrl;
+    const normalized = `/api/video-studio/media?path=${encodeURIComponent(mediaPath.startsWith('/') ? mediaPath : `/${mediaPath}`)}`;
     const query = new URLSearchParams({
       src: normalized,
       title: articleTitle,
@@ -456,6 +419,14 @@ export default function VideoStudioPage() {
           gap: 0.4rem;
           flex-wrap: wrap;
           margin-top: 0.85rem;
+        }
+
+        .vs-mode-row {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          margin-top: 0.65rem;
+          flex-wrap: wrap;
         }
 
         .vs-pill {
@@ -548,7 +519,7 @@ export default function VideoStudioPage() {
         <div className="vs-wrap">
           {backendOffline && (
             <div className="vs-offline">
-              Video Studio backend is offline. Set <strong>NEXT_PUBLIC_VIDEO_STUDIO_API_BASE</strong> to your deployed Python API URL.
+              Video Studio backend is unreachable. This feature requires a live backend at <strong>NEXT_PUBLIC_VIDEO_STUDIO_API_BASE</strong>.
             </div>
           )}
 
@@ -575,6 +546,21 @@ export default function VideoStudioPage() {
                     {pill.label}
                   </button>
                 ))}
+              </div>
+
+              <div className="vs-mode-row">
+                <button
+                  className={`vs-pill ${fastMode ? 'vs-pill-active' : ''}`}
+                  onClick={() => setFastMode(true)}
+                >
+                  Fast Mode (35-45s)
+                </button>
+                <button
+                  className={`vs-pill ${!fastMode ? 'vs-pill-active' : ''}`}
+                  onClick={() => setFastMode(false)}
+                >
+                  Standard (60-90s)
+                </button>
               </div>
 
               {isLoadingArticles || isCheckingBackend ? (
@@ -604,7 +590,9 @@ export default function VideoStudioPage() {
             <aside className="vs-sidebar">
               <div className="vs-side-card" style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #FF6B6B 100%)', color: 'white' }}>
                 <h2 className="vs-side-title" style={{ color: 'white' }}>🎬 Video Studio</h2>
-                <p className="vs-side-text" style={{ color: 'rgba(255,255,255,0.9)' }}>Video generation takes 45–90 seconds.</p>
+                <p className="vs-side-text" style={{ color: 'rgba(255,255,255,0.9)' }}>
+                  {fastMode ? 'Fast mode targets 35-45 second videos.' : 'Standard mode targets 60-90 seconds.'}
+                </p>
                 <p className="vs-side-text" style={{ color: 'rgba(255,255,255,0.9)' }}>Your videos are generated with ET Patrika branding.</p>
                 <p className="vs-side-text" style={{ color: 'rgba(255,255,255,0.95)', fontWeight: 700 }}>
                   Browse Role: {currentRole}
