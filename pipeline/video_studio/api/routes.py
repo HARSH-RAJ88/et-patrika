@@ -3,8 +3,11 @@ ET Patrika Video Studio API — port 8001.
 """
 import uuid
 import threading
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from pipeline.video_studio.models.schemas import VideoRequest, VideoJobStatus, ArticlePreview, SourceMode, NewsScript
@@ -22,6 +25,7 @@ from pipeline.video_studio.services.video_keypoints import generate_video_key_po
 
 router = APIRouter()
 jobs: dict[str, VideoJobStatus] = {}
+ingest_jobs: dict[str, dict] = {}
 
 
 def _news_script_from_row(row: dict, language: str) -> NewsScript:
@@ -59,12 +63,114 @@ def _upd(job_id: str, **kw):
         pass
 
 
+def _is_trigger_authorized(request: Request) -> bool:
+    expected = config.PIPELINE_TRIGGER_API_KEY
+    if not expected:
+        return False
+    provided = request.headers.get("x-pipeline-trigger-key", "")
+    return provided == expected
+
+
+def _run_ingest_trigger(trigger_id: str, limit: int, dry_run: bool):
+    pipeline_dir = Path(__file__).resolve().parents[2]
+    cmd = [sys.executable, "pipeline.py", "--limit", str(limit)]
+    if dry_run:
+        cmd.append("--dry-run")
+
+    ingest_jobs[trigger_id] = {
+        "trigger_id": trigger_id,
+        "status": "running",
+        "command": " ".join(cmd),
+        "limit": limit,
+        "dry_run": dry_run,
+        "exit_code": None,
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(pipeline_dir),
+            capture_output=True,
+            text=True,
+            timeout=config.PIPELINE_TRIGGER_TIMEOUT_SEC,
+        )
+
+        stdout_tail = (result.stdout or "")[-5000:]
+        stderr_tail = (result.stderr or "")[-5000:]
+        ingest_jobs[trigger_id].update({
+            "status": "done" if result.returncode == 0 else "failed",
+            "exit_code": result.returncode,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+        })
+    except subprocess.TimeoutExpired:
+        ingest_jobs[trigger_id].update({
+            "status": "failed",
+            "exit_code": -1,
+            "stderr_tail": "Pipeline trigger timed out.",
+        })
+    except Exception as exc:
+        ingest_jobs[trigger_id].update({
+            "status": "failed",
+            "exit_code": -1,
+            "stderr_tail": str(exc),
+        })
+
+
+def _precache_role_scripts(
+    article: dict,
+    article_id: str | None,
+    active_role: str,
+    base_style: str,
+    style_key: str,
+    language: str,
+    fast_mode: bool,
+):
+    if not article_id:
+        return
+
+    roles = ["student", "investor", "founder", "citizen"]
+    for role in roles:
+        if role == active_role:
+            continue
+        try:
+            cached = db.get_latest_video_script(article_id, role, style_key)
+            if cached:
+                continue
+            role_ctx = db.get_article_context(article_id, role)
+            script = generate_script_from_article(
+                article,
+                role_context=role_ctx,
+                role=role,
+                style=base_style,
+                language=language,
+                fast_mode=fast_mode,
+                    article_id=article_id,
+            )
+            db.save_video_script(article_id, role, style_key, {
+                "hook": script.hook,
+                "key_facts": script.key_facts,
+                "context": script.context,
+                "closing": script.closing,
+                "full_script": script.full_script,
+                "keywords": script.keywords,
+                "has_numbers": script.has_numbers,
+                "numbers_context": script.numbers_context,
+                "estimated_duration_seconds": script.estimated_duration_seconds,
+            })
+        except Exception as exc:
+            logger.warning(f"[precache] role={role} failed: {exc}")
+
+
 def _run(job_id: str, request: VideoRequest):
     temp = config.TEMP_DIR / job_id
     temp.mkdir(parents=True, exist_ok=True)
     article_id = request.article_id
     role_value = request.role.value if hasattr(request.role, "value") else str(request.role)
     style_value = request.style.value if hasattr(request.style, "value") else str(request.style)
+    style_key = f"{style_value}_fast" if request.fast_mode else style_value
 
     try:
         # 1. Get article
@@ -94,21 +200,36 @@ def _run(job_id: str, request: VideoRequest):
         script_id = None
         cached_script = None
         if article_id:
-            cached_script = db.get_latest_video_script(article_id, role_value, style_value)
+            cached_script = db.get_latest_video_script(article_id, role_value, style_key)
 
-        if cached_script:
+        is_fast_cached = (
+            cached_script is not None
+            and (cached_script.get("estimated_duration_seconds") or 999) <= 45
+        )
+
+        if cached_script and (not request.fast_mode or is_fast_cached):
             _upd(job_id, progress_percent=32, current_step="Using cached role-aware script...")
             script = _news_script_from_row(cached_script, request.language)
             script_id = cached_script.get("id")
         else:
             # 3. Generate script
-            _upd(job_id, progress_percent=32, current_step="Writing broadcast script...")
-            script = generate_script_from_article(article, role_ctx, role_value, style_value, request.language)
+            mode_label = "fast" if request.fast_mode else "standard"
+            _upd(job_id, progress_percent=32, current_step=f"Writing {mode_label} broadcast script...")
+            script = generate_script_from_article(
+                article,
+                role_context=role_ctx,
+                role=role_value,
+                style=style_value,
+                language=request.language,
+                fast_mode=request.fast_mode,
+                    article_id=article_id,
+                    video_job_id=job_id,
+            )
             _upd(job_id, script=script)
 
             if article_id:
                 try:
-                    script_id = db.save_video_script(article_id, role_value, style_value, {
+                    script_id = db.save_video_script(article_id, role_value, style_key, {
                         "hook": script.hook, "key_facts": script.key_facts,
                         "context": script.context, "closing": script.closing,
                         "full_script": script.full_script, "keywords": script.keywords,
@@ -117,6 +238,14 @@ def _run(job_id: str, request: VideoRequest):
                     })
                 except Exception as e:
                     logger.warning(f"[{job_id}] Script save failed: {e}")
+
+        # 3c. Warm cache for other roles so next generates are much faster.
+        if article_id:
+            threading.Thread(
+                target=_precache_role_scripts,
+                args=(article, article_id, role_value, style_value, style_key, request.language, request.fast_mode),
+                daemon=True,
+            ).start()
 
         # 3b. Generate and cache key points for watch experience
         if article_id:
@@ -144,22 +273,36 @@ def _run(job_id: str, request: VideoRequest):
 
         # 4. TTS
         check_voice_model(request.language)
-        _upd(job_id, status="tts", progress_percent=45,
-             current_step="Generating voice narration with Piper...")
-        segments = synthesize_full_script(script, job_id)
-        master_audio = str(temp / "master_audio.wav")
-        concatenate_audio_segments(segments, master_audio)
+        _upd(job_id, status="visuals", progress_percent=45,
+             current_step="Pre-warming visuals and chart context...")
 
-        # 5. Visuals
-        _upd(job_id, status="visuals", progress_percent=60,
-             current_step="Fetching news visuals from Pexels...")
-        images = fetch_images(script.keywords, count=max(len(segments) + 1, 5), job_id=job_id)
+        image_count = 4 if request.fast_mode else 5
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            images_future = pool.submit(
+                fetch_images,
+                script.keywords,
+                image_count,
+                job_id,
+                request.fast_mode,
+            )
+            chart_future = None
+            if script.has_numbers and script.numbers_context:
+                chart_future = pool.submit(
+                    generate_chart,
+                    script.numbers_context,
+                    str(temp / "chart.png"),
+                )
 
-        # 6. Chart
-        chart_path = None
-        if script.has_numbers and script.numbers_context:
-            _upd(job_id, progress_percent=68, current_step="Building data visualization...")
-            chart_path = generate_chart(script.numbers_context, str(temp / "chart.png"))
+            _upd(job_id, status="tts", progress_percent=56,
+                 current_step="Generating voice narration with Piper...")
+            segments = synthesize_full_script(script, job_id)
+            master_audio = str(temp / "master_audio.wav")
+            concatenate_audio_segments(segments, master_audio)
+
+            _upd(job_id, status="visuals", progress_percent=68,
+                 current_step="Finalizing visuals...")
+            images = images_future.result()
+            chart_path = chart_future.result() if chart_future else None
 
         # 7. Subtitles
         _upd(job_id, status="composing", progress_percent=74, current_step="Generating subtitles...")
@@ -206,7 +349,7 @@ def _run(job_id: str, request: VideoRequest):
 
 
 @router.get("/articles", response_model=list[ArticlePreview])
-async def list_articles(limit: int = Query(default=20, le=50), category: str = Query(default="all")):
+async def list_articles(limit: int = Query(default=10, le=10), category: str = Query(default="all")):
     try:
         articles = db.get_latest_articles(limit=limit, category=category)
         previews = [ArticlePreview(
@@ -225,6 +368,52 @@ async def list_articles(limit: int = Query(default=20, le=50), category: str = Q
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/ingest/trigger")
+async def trigger_ingestion(
+    request: Request,
+    limit: int = Query(default=5, ge=1, le=10),
+    dry_run: bool = Query(default=False),
+):
+    if not config.PIPELINE_TRIGGER_API_KEY:
+        raise HTTPException(status_code=503, detail="Pipeline trigger is not configured.")
+
+    if not _is_trigger_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized trigger request.")
+
+    trigger_id = str(uuid.uuid4())[:8]
+    ingest_jobs[trigger_id] = {
+        "trigger_id": trigger_id,
+        "status": "queued",
+        "command": "",
+        "limit": limit,
+        "dry_run": dry_run,
+        "exit_code": None,
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+
+    threading.Thread(
+        target=_run_ingest_trigger,
+        args=(trigger_id, limit, dry_run),
+        daemon=True,
+    ).start()
+
+    return {
+        "trigger_id": trigger_id,
+        "status": "queued",
+        "limit": limit,
+        "dry_run": dry_run,
+    }
+
+
+@router.get("/ingest/status/{trigger_id}")
+async def trigger_ingestion_status(trigger_id: str):
+    row = ingest_jobs.get(trigger_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Trigger job not found")
+    return row
+
+
 @router.post("/generate", response_model=VideoJobStatus)
 async def generate_video(request: VideoRequest):
     role_value = request.role.value if hasattr(request.role, "value") else str(request.role)
@@ -237,11 +426,15 @@ async def generate_video(request: VideoRequest):
     )
     try:
         db.save_video_job(job_id, request.article_id, role_value,
-                          style_value, request.mode, request.url)
+                          f"{style_value}_fast" if request.fast_mode else style_value,
+                          request.mode, request.url)
     except Exception:
         pass
     threading.Thread(target=_run, args=(job_id, request), daemon=True).start()
-    logger.info(f"Job {job_id} started: lang={request.language}, role={role_value}, style={style_value}")
+    logger.info(
+        f"Job {job_id} started: lang={request.language}, role={role_value}, "
+        f"style={style_value}, fast_mode={request.fast_mode}"
+    )
     return jobs[job_id]
 
 

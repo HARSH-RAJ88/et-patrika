@@ -21,6 +21,28 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+function formatSplitLabel(split?: string | null): string {
+  switch (split) {
+    case 'india_only':
+      return 'India Focus';
+    case 'bharat_only':
+      return 'Bharat Focus';
+    case 'both':
+      return 'Bharat + India';
+    case 'global':
+      return 'Global Context';
+    default:
+      return 'Unlabeled';
+  }
+}
+
+function conflictTone(conflict?: number | null): { label: string; color: string } {
+  const value = typeof conflict === 'number' ? conflict : 0;
+  if (value >= 0.7) return { label: 'High Conflict', color: '#FCA5A5' };
+  if (value >= 0.4) return { label: 'Moderate Conflict', color: '#FCD34D' };
+  return { label: 'Low Conflict', color: '#86EFAC' };
+}
+
 interface FeaturedCardProps {
   item: FeedItem;
   role: UserRole;
@@ -32,6 +54,9 @@ export default function FeaturedCard({ item, role, translatedEli5 }: FeaturedCar
   const credibility = Math.round((article.credibility_score || 0.5) * 100);
   const actionChips = (context.action_cards || []).slice(0, 3);
   const sentimentIcon = SENTIMENT_ICONS[article.sentiment] || SENTIMENT_ICONS.neutral;
+  const splitLabel = formatSplitLabel(article.bharat_india_split);
+  const conflict = typeof article.conflict_index === 'number' ? article.conflict_index : null;
+  const conflictChip = conflictTone(conflict);
 
   return (
     <Link href={`/briefing/${article.id}`} className="featured-link">
@@ -110,6 +135,19 @@ export default function FeaturedCard({ item, role, translatedEli5 }: FeaturedCar
           padding: 0.2rem 0.6rem;
           background: var(--color-surface-muted);
           border-radius: var(--radius-full);
+        }
+
+        .featured-branch-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.3rem;
+          font-size: 0.75rem;
+          font-weight: 600;
+          padding: 0.2rem 0.6rem;
+          border-radius: var(--radius-full);
+          border: 1px solid rgba(255, 255, 255, 0.35);
+          background: rgba(255, 255, 255, 0.15);
+          color: white;
         }
 
         .featured-headline {
@@ -194,6 +232,16 @@ export default function FeaturedCard({ item, role, translatedEli5 }: FeaturedCar
             <span className="featured-source">{article.source}</span>
             <span className="featured-time">{timeAgo(article.published_at)}</span>
             <span style={{ fontSize: '0.8rem' }}>{sentimentIcon}</span>
+            <span className="featured-branch-chip" title="Bharat/India split">
+              {splitLabel}
+            </span>
+            <span
+              className="featured-branch-chip"
+              style={{ borderColor: conflictChip.color, color: conflictChip.color }}
+              title="Conflict index"
+            >
+              {conflictChip.label}{conflict !== null ? ` ${Math.round(conflict * 100)}%` : ''}
+            </span>
             <span className="featured-credibility">
               🛡️ {credibility}% reliable
             </span>

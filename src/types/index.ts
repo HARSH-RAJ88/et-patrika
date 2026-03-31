@@ -56,6 +56,9 @@ export interface Article {
   entities: string[];
   sentiment: Sentiment;
   credibility_score: number;
+  story_momentum?: 'emerging' | 'building' | 'peak' | 'resolving' | 'aftermath' | null;
+  bharat_india_split?: 'india_only' | 'bharat_only' | 'both' | 'global' | null;
+  conflict_index?: number | null;
   synthesis_briefing: string | null;
   eli5: string | null;
   story_arc_key: string | null;

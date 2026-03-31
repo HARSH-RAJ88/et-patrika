@@ -23,6 +23,7 @@ class VideoRequest(BaseModel):
     role: str = "general"              # student|investor|founder|citizen|general
     style: VideoStyle = VideoStyle.STANDARD
     language: str = "en"               # en or hi
+    fast_mode: bool = False             # 35-45s target script/video path
 
     @validator("article_id", always=True)
     def check_supabase(cls, v, values):

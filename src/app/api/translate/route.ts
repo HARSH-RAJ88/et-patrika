@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
       text: string;
       targetLanguage: string;
       articleId: string;
-      fieldName: 'eli5' | 'why_it_matters' | 'synthesis_briefing' | 'what_to_watch';
+      fieldName: 'eli5' | 'why_it_matters' | 'synthesis_briefing' | 'what_to_watch' | 'role_analogy';
       role?: string;
     };
 
@@ -54,9 +54,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!fieldName || !['eli5', 'why_it_matters', 'synthesis_briefing', 'what_to_watch'].includes(fieldName)) {
+    if (!fieldName || !['eli5', 'why_it_matters', 'synthesis_briefing', 'what_to_watch', 'role_analogy'].includes(fieldName)) {
       return NextResponse.json(
-        { error: 'Invalid fieldName. Must be one of: eli5, why_it_matters, synthesis_briefing, what_to_watch' },
+        { error: 'Invalid fieldName. Must be one of: eli5, why_it_matters, synthesis_briefing, what_to_watch, role_analogy' },
         { status: 400 }
       );
     }

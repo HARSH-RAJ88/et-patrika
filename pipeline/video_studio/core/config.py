@@ -47,6 +47,11 @@ class VideoStudioConfig:
     PORT: int = 8001  # Next.js is on 3000. Never conflict.
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # ── Pipeline trigger controls (for autonomous ingestion) ──
+    PIPELINE_TRIGGER_API_KEY: str = os.getenv("PIPELINE_TRIGGER_API_KEY", "")
+    PIPELINE_MAX_ARTICLES_PER_RUN: int = int(os.getenv("PIPELINE_MAX_ARTICLES_PER_RUN", "5"))
+    PIPELINE_TRIGGER_TIMEOUT_SEC: int = int(os.getenv("PIPELINE_TRIGGER_TIMEOUT_SEC", "900"))
+
     def validate(self) -> list[str]:
         missing = []
         if not self.GROQ_API_KEY:
@@ -57,6 +62,8 @@ class VideoStudioConfig:
             missing.append("SUPABASE_SERVICE_ROLE_KEY missing from pipeline/.env")
         if not self.PEXELS_API_KEY:
             missing.append("PEXELS_API_KEY not set — visuals will use fallback gradients")
+        if not self.PIPELINE_TRIGGER_API_KEY:
+            missing.append("PIPELINE_TRIGGER_API_KEY not set — /studio/api/ingest/trigger is disabled")
         return missing
 
     def ensure_dirs(self):

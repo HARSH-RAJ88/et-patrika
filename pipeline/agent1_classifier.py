@@ -17,8 +17,12 @@ from config import (
     supabase_request,
     RSS_FEEDS,
     VALID_CATEGORIES,
+    GROQ_MODEL_CLASSIFIER,
+    GROQ_CLASSIFIER_INPUT_COST_PER_M,
+    GROQ_CLASSIFIER_OUTPUT_COST_PER_M,
     log,
 )
+from models import AgentArticlePayload
 
 
 # ── Content extraction helpers ────────────────────────────────
@@ -97,17 +101,79 @@ Article title: {title}
 Article content (first 1500 chars): {content[:1500]}"""
 
 
-def classify_article(title: str, content: str) -> dict:
+def _extract_usage(response) -> tuple[int, int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0, 0
+
+    if isinstance(usage, dict):
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens) or 0)
+        return prompt_tokens, completion_tokens, total_tokens
+
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+    return prompt_tokens, completion_tokens, total_tokens
+
+
+def _estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
+    input_cost = (prompt_tokens / 1_000_000.0) * GROQ_CLASSIFIER_INPUT_COST_PER_M
+    output_cost = (completion_tokens / 1_000_000.0) * GROQ_CLASSIFIER_OUTPUT_COST_PER_M
+    return round(input_cost + output_cost, 8)
+
+
+def _log_cost_event(
+    run_id: str | None,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    article_url: str,
+    article_title: str,
+):
+    supabase_request(
+        "POST",
+        "ai_cost_events",
+        data={
+            "run_id": run_id,
+            "stage": "agent1_classification",
+            "provider": "groq",
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": _estimate_cost_usd(prompt_tokens, completion_tokens),
+            "metadata": {
+                "article_url": article_url,
+                "article_title": article_title[:180],
+            },
+        },
+    )
+
+
+def classify_article(title: str, content: str, run_id: str | None = None, article_url: str = "") -> dict:
     """Call Groq to classify an article. Returns classification dict."""
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL_CLASSIFIER,
             messages=[
                 {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
                 {"role": "user", "content": build_classifier_prompt(title, content)},
             ],
             temperature=0.2,
             max_tokens=500,
+        )
+        prompt_tokens, completion_tokens, total_tokens = _extract_usage(response)
+        _log_cost_event(
+            run_id=run_id,
+            model=GROQ_MODEL_CLASSIFIER,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            article_url=article_url,
+            article_title=title,
         )
         raw = response.choices[0].message.content.strip()
 
@@ -256,6 +322,8 @@ def insert_article(article: dict, classification: dict) -> dict | None:
         "entities": json.dumps(classification["entities"]),
         "sentiment": classification["sentiment"],
         "credibility_score": classification["credibility_score"],
+        "updated_by_agent": "agent1",
+        "version": 1,
     }
 
     result = supabase_request(
@@ -269,7 +337,7 @@ def insert_article(article: dict, classification: dict) -> dict | None:
 
 # ── Main Pipeline ─────────────────────────────────────────────
 
-def run() -> list[dict]:
+def run(run_id: str | None = None) -> list[dict]:
     """
     Main Agent 1 entry point.
     Returns list of newly inserted article dicts (with Supabase IDs).
@@ -303,15 +371,21 @@ def run() -> list[dict]:
             log(f"[{i+1}/{len(new_articles)}] Classifying: {article['title'][:80]}...")
 
             # Classify via Groq
-            classification = classify_article(article["title"], article["content"])
+            classification = classify_article(
+                article["title"],
+                article["content"],
+                run_id=run_id,
+                article_url=article.get("url", ""),
+            )
             log(f"  → Category: {classification['category']} | Sentiment: {classification['sentiment']}")
 
             # Insert into Supabase
             result = insert_article(article, classification)
             if result:
                 # Attach classification data to the result for downstream agents
-                result["_relevance_scores"] = classification["relevance_scores"]
-                inserted.append(result)
+                payload = AgentArticlePayload.from_dict(result).to_dict()
+                payload["_relevance_scores"] = classification["relevance_scores"]
+                inserted.append(payload)
                 log(f"  → Inserted (ID: {result.get('id', 'unknown')[:8]}...)", "OK")
             else:
                 log(f"  → Insert failed or duplicate", "SKIP")

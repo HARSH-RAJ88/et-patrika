@@ -206,3 +206,35 @@ def fail_video_job(job_id: str, error_message: str, current_step: str):
     client.table("video_jobs").update({
         "status": "failed", "error_message": error_message, "current_step": current_step
     }).eq("id", job_id).execute()
+
+
+def log_ai_cost_event(
+    stage: str,
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    estimated_cost_usd: float,
+    article_id: str | None = None,
+    video_job_id: str | None = None,
+    metadata: dict | None = None,
+):
+    """Persist token/cost usage for observability and optimization."""
+    client = _get_client()
+    payload = {
+        "stage": stage,
+        "provider": provider,
+        "model": model,
+        "prompt_tokens": int(prompt_tokens or 0),
+        "completion_tokens": int(completion_tokens or 0),
+        "total_tokens": int(total_tokens or 0),
+        "estimated_cost_usd": float(estimated_cost_usd or 0.0),
+        "metadata": metadata or {},
+    }
+    if article_id:
+        payload["article_id"] = article_id
+    if video_job_id:
+        payload["video_job_id"] = video_job_id
+
+    client.table("ai_cost_events").insert(payload).execute()

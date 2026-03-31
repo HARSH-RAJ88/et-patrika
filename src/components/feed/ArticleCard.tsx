@@ -35,6 +35,28 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+function formatSplitLabel(split?: string | null): string {
+  switch (split) {
+    case 'india_only':
+      return 'India Focus';
+    case 'bharat_only':
+      return 'Bharat Focus';
+    case 'both':
+      return 'Bharat + India';
+    case 'global':
+      return 'Global Context';
+    default:
+      return 'Unlabeled';
+  }
+}
+
+function conflictTone(conflict?: number | null): { label: string; color: string } {
+  const value = typeof conflict === 'number' ? conflict : 0;
+  if (value >= 0.7) return { label: 'High Conflict', color: '#DC2626' };
+  if (value >= 0.4) return { label: 'Moderate Conflict', color: '#D97706' };
+  return { label: 'Low Conflict', color: '#059669' };
+}
+
 interface ArticleCardProps {
   item: FeedItem;
   role: UserRole;
@@ -59,6 +81,9 @@ export default function ArticleCard({
   const credibility = Math.round((article.credibility_score || 0.5) * 100);
   const displayEli5 = translatedEli5 || article.eli5;
   const displayWhyItMatters = translatedWhyItMatters || context.why_it_matters;
+  const splitLabel = formatSplitLabel(article.bharat_india_split);
+  const conflict = typeof article.conflict_index === 'number' ? article.conflict_index : null;
+  const conflictChip = conflictTone(conflict);
 
   const LANGUAGE_BADGES: Record<'hi' | 'ta' | 'bn' | 'te', string> = {
     hi: 'हि',
@@ -121,6 +146,19 @@ export default function ArticleCard({
           border-radius: var(--radius-full);
           font-size: 0.75rem;
           font-weight: 500;
+        }
+
+        .branch-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.3rem;
+          padding: 0.125rem 0.5rem;
+          border-radius: var(--radius-full);
+          font-size: 0.72rem;
+          font-weight: 600;
+          border: 1px solid var(--color-border-subtle);
+          background: var(--color-surface-muted);
+          color: var(--color-ink-secondary);
         }
 
         .category-dot {
@@ -256,6 +294,16 @@ export default function ArticleCard({
           <span className="category-indicator">
             <span className="category-dot" style={{ background: dotColor }} />
             {article.category}
+          </span>
+          <span className="branch-chip" title="Bharat/India split">
+            {splitLabel}
+          </span>
+          <span
+            className="branch-chip"
+            style={{ borderColor: conflictChip.color, color: conflictChip.color }}
+            title="Conflict index"
+          >
+            {conflictChip.label}{conflict !== null ? ` ${Math.round(conflict * 100)}%` : ''}
           </span>
           <span className="credibility-badge">
             🛡️ {credibility}%
