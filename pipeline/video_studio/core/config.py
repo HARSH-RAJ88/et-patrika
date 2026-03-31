@@ -44,7 +44,7 @@ class VideoStudioConfig:
     BRAND_COLOR_RGB: tuple = (232, 19, 43)
 
     # ── Server ──
-    PORT: int = 8001  # Next.js is on 3000. Never conflict.
+    PORT: int = int(os.getenv("PORT", "8001"))  # Railway injects PORT in production.
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
     # ── Pipeline trigger controls (for autonomous ingestion) ──
