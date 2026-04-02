@@ -34,10 +34,14 @@ class VideoStudioConfig:
     ASSETS_DIR: Path = _BASE / "assets"
 
     # ── Video settings ──
-    VIDEO_WIDTH: int = 1920
-    VIDEO_HEIGHT: int = 1080
-    VIDEO_FPS: int = 24
-    VIDEO_BITRATE: str = "4000k"
+    VIDEO_WIDTH: int = int(os.getenv("VIDEO_WIDTH", "1280"))
+    VIDEO_HEIGHT: int = int(os.getenv("VIDEO_HEIGHT", "720"))
+    VIDEO_FPS: int = int(os.getenv("VIDEO_FPS", "24"))
+    VIDEO_BITRATE: str = os.getenv("VIDEO_BITRATE", "2200k")
+    VIDEO_CRF: str = os.getenv("VIDEO_CRF", "28")
+    VIDEO_THREADS: str = os.getenv("VIDEO_THREADS", "1")
+    VIDEO_PRESET: str = os.getenv("VIDEO_PRESET", "ultrafast")
+    VIDEO_MAX_SECONDS: int = int(os.getenv("VIDEO_MAX_SECONDS", "90"))
 
     # ── ET Patrika brand ──
     BRAND_NAME: str = "ET Patrika"

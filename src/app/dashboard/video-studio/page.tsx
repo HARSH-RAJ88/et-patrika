@@ -38,6 +38,7 @@ interface VideoHistoryItem {
   article_id: string;
   role: string;
   status: string;
+  video_url?: string;
   video_filename?: string;
   duration_seconds?: number;
   progress_percent?: number;
@@ -92,13 +93,14 @@ export default function VideoStudioPage() {
 
       const completedStatuses: Record<string, VideoJobCardStatus & { jobId?: string }> = {};
       rows.forEach((row) => {
-        if (row.status === 'done' && row.video_filename) {
+        const resolvedUrl = row.video_url || (row.video_filename ? `/videos/${row.video_filename}` : undefined);
+        if (row.status === 'done' && resolvedUrl) {
           const key = `${row.article_id}:${row.role}`;
           completedStatuses[key] = {
             status: 'done',
             progress_percent: 100,
             current_step: 'Video ready',
-            video_url: `/videos/${row.video_filename}`,
+            video_url: resolvedUrl,
             role: row.role,
             duration_seconds: row.duration_seconds,
             jobId: row.id,
@@ -266,7 +268,7 @@ export default function VideoStudioPage() {
                 article_id: jobKey.split(':')[0],
                 role,
                 status: 'done',
-                video_filename: status.video_url ? status.video_url.replace('/videos/', '') : undefined,
+                video_url: status.video_url,
                 duration_seconds: status.duration_seconds,
                 title: articleTitle,
               };
@@ -346,10 +348,9 @@ export default function VideoStudioPage() {
   }, [articles, backendOffline, currentRole, generationLanguage, startPolling, fastMode]);
 
   const openPlayer = useCallback((videoUrl: string, articleTitle: string, role: string, articleId: string, durationSeconds?: number) => {
-    const mediaPath = videoUrl.startsWith('http')
-      ? new URL(videoUrl).pathname
-      : videoUrl;
-    const normalized = `/api/video-studio/media?path=${encodeURIComponent(mediaPath.startsWith('/') ? mediaPath : `/${mediaPath}`)}`;
+    const normalized = videoUrl.startsWith('http')
+      ? videoUrl
+      : `/api/video-studio/media?path=${encodeURIComponent(videoUrl.startsWith('/') ? videoUrl : `/${videoUrl}`)}`;
     const query = new URLSearchParams({
       src: normalized,
       title: articleTitle,
@@ -617,11 +618,15 @@ export default function VideoStudioPage() {
                           {video.role} {video.duration_seconds ? `• ${Math.round(video.duration_seconds)}s` : ''}
                         </div>
                       </div>
-                      {video.video_filename && (
+                      {(video.video_url || video.video_filename) && (
                         <button
                           type="button"
                           className="vs-watch-link"
-                          onClick={() => openPlayer(`/videos/${video.video_filename}`, video.title, video.role, video.article_id, video.duration_seconds)}
+                          onClick={() => {
+                            const candidateUrl = video.video_url || (video.video_filename ? `/videos/${video.video_filename}` : '');
+                            if (!candidateUrl) return;
+                            openPlayer(candidateUrl, video.title, video.role, video.article_id, video.duration_seconds);
+                          }}
                         >
                           ▶ Watch
                         </button>

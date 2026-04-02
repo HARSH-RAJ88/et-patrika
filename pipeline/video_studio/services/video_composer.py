@@ -86,12 +86,32 @@ def create_video_segment(
         "-filter_complex", filter_complex,
         "-map", "[v]",
         "-c:v", "libx264",
+        "-preset", str(config.VIDEO_PRESET),
+        "-crf", str(config.VIDEO_CRF),
+        "-threads", str(config.VIDEO_THREADS),
         "-t", str(dur),
         "-pix_fmt", "yuv420p",
         str(output_path)
     ]
-    
-    subprocess.run(cmd, capture_output=True, check=True)
+
+    try:
+        subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+    except subprocess.CalledProcessError as exc:
+        # Retry with an even cheaper non-zoom render if container resources are tight.
+        logger.warning("FFmpeg segment render failed; retrying in low-resource mode: %s", exc)
+        retry_cmd = [
+            _resolve_ffmpeg_executable(), "-y",
+            "-loop", "1", "-i", proc_img_path,
+            "-vf", f"scale={w}:{h},format=yuv420p",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", str(config.VIDEO_CRF),
+            "-threads", "1",
+            "-t", str(dur),
+            "-pix_fmt", "yuv420p",
+            str(output_path)
+        ]
+        subprocess.run(retry_cmd, capture_output=True, check=True, timeout=120)
     return str(output_path)
 
 def compose_video(
@@ -150,6 +170,11 @@ def compose_video(
         "-i", master_audio_path,
         "-vf", drawtext_filter,
         "-c:v", "libx264", "-c:a", "aac",
+        "-preset", str(config.VIDEO_PRESET),
+        "-crf", str(config.VIDEO_CRF),
+        "-threads", str(config.VIDEO_THREADS),
+        "-s", f"{config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}",
+        "-t", str(config.VIDEO_MAX_SECONDS),
         "-b:v", config.VIDEO_BITRATE, "-b:a", "192k",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         final_output
@@ -161,8 +186,12 @@ def compose_video(
         # Fallback without subtitles if filter fails
         cmd_merge_fallback = [
             _resolve_ffmpeg_executable(), "-y", "-i", silent_video, "-i", master_audio_path,
-            "-c:v", "libx264", "-c:a", "aac", final_output
+            "-c:v", "libx264", "-c:a", "aac",
+            "-preset", "ultrafast", "-threads", "1",
+            "-s", f"{config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}",
+            "-t", str(config.VIDEO_MAX_SECONDS),
+            final_output
         ]
-        subprocess.run(cmd_merge_fallback, check=True)
+        subprocess.run(cmd_merge_fallback, check=True, timeout=120)
         
     return final_output

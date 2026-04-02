@@ -5,6 +5,7 @@ import uuid
 import threading
 import subprocess
 import sys
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -322,13 +323,43 @@ def _run(job_id: str, request: VideoRequest):
         total_dur = segments[-1].end_time if segments else 90.0
         vf = f"etpatrika_{job_id}.mp4"
 
+        if article_id:
+            storage_path = f"{article_id}_{role_value}.mp4"
+        else:
+            storage_path = f"adhoc_{job_id}_{role_value}.mp4"
+
+        public_url = db.upload_video_to_storage(video_path, storage_path)
+
+        try:
+            os.remove(video_path)
+        except OSError:
+            pass
+
         _upd(job_id, status="done", progress_percent=100,
              current_step="Video ready!",
              video_path=video_path,
-             video_url=f"/videos/{vf}")
+             video_url=public_url)
 
         if article_id:
-            db.complete_video_job(job_id, video_path, vf, total_dur, script_id)
+            db.complete_video_job(
+                job_id,
+                video_path,
+                vf,
+                total_dur,
+                script_id,
+                video_url=public_url,
+                storage_path=storage_path,
+            )
+        else:
+            db.complete_video_job(
+                job_id,
+                video_path,
+                vf,
+                total_dur,
+                script_id,
+                video_url=public_url,
+                storage_path=storage_path,
+            )
 
         logger.info(f"[{job_id}] ✓ Complete: {video_path}")
 
@@ -449,6 +480,7 @@ async def get_status(job_id: str):
                                   progress_percent=row["progress_percent"],
                                   current_step=row["current_step"],
                                   video_path=row.get("video_path"),
+                                  video_url=row.get("video_url"),
                                   error=row.get("error_message"))
     except Exception:
         pass
@@ -472,7 +504,7 @@ async def download_video(job_id: str):
 async def video_history(limit: int = Query(default=10, le=50)):
     try:
         result = db._get_client().table("video_jobs") \
-            .select("id, article_id, role, style, status, progress_percent, created_at, completed_at, video_filename, duration_seconds") \
+            .select("id, article_id, role, style, status, progress_percent, created_at, completed_at, video_filename, video_url, storage_path, duration_seconds") \
             .order("created_at", desc=True).limit(limit).execute()
         return result.data or []
     except Exception as e:
