@@ -4,6 +4,8 @@ Supabase Reader — bridges Video Studio with ET Patrika's existing data.
 from postgrest import SyncPostgrestClient
 from typing import Optional
 from datetime import datetime, timezone
+import mimetypes
+import requests
 from pipeline.video_studio.core.config import config
 from pipeline.video_studio.core.logger import logger
 
@@ -188,13 +190,52 @@ def update_video_job(job_id: str, **kwargs):
     client.table("video_jobs").update(kwargs).eq("id", job_id).execute()
 
 
-def complete_video_job(job_id: str, video_path: str, video_filename: str,
-                        duration_seconds: float, script_id: str = None):
+def upload_video_to_storage(local_path: str, storage_path: str) -> str:
+    """Upload a generated mp4 file to Supabase Storage and return public URL."""
+    if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("Supabase credentials missing; cannot upload video to storage.")
+
+    normalized_path = storage_path.lstrip("/")
+    upload_url = f"{config.SUPABASE_URL}/storage/v1/object/videos/{normalized_path}"
+    content_type = mimetypes.guess_type(local_path)[0] or "video/mp4"
+
+    with open(local_path, "rb") as video_file:
+        response = requests.post(
+            upload_url,
+            headers={
+                "apikey": config.SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {config.SUPABASE_SERVICE_ROLE_KEY}",
+                "x-upsert": "true",
+                "content-type": content_type,
+            },
+            data=video_file,
+            timeout=180,
+        )
+
+    if response.status_code >= 300:
+        raise RuntimeError(
+            f"Supabase Storage upload failed ({response.status_code}): {response.text[:300]}"
+        )
+
+    return f"{config.SUPABASE_URL}/storage/v1/object/public/videos/{normalized_path}"
+
+
+def complete_video_job(
+    job_id: str,
+    video_path: str,
+    video_filename: str,
+    duration_seconds: float,
+    script_id: str = None,
+    video_url: str = None,
+    storage_path: str = None,
+):
     """Mark job as done with final output details."""
     client = _get_client()
     client.table("video_jobs").update({
         "status": "done", "progress_percent": 100, "current_step": "Video ready",
         "video_path": video_path, "video_filename": video_filename,
+        "video_url": video_url,
+        "storage_path": storage_path,
         "duration_seconds": duration_seconds, "script_id": script_id,
         "completed_at": "now()"
     }).eq("id", job_id).execute()
